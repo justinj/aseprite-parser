@@ -12,8 +12,9 @@ mod constants;
 mod metadata;
 mod parser;
 
-pub use metadata::{AsepriteFileHeader, Layer, Point, Rect, Slice, SliceKey, Tag};
+pub use metadata::{FileHeader, LayerHeader, Point, Rect, Slice, SliceKey, Tag};
 
+#[derive(Debug, Copy, Clone)]
 struct Color(u32);
 
 impl Color {
@@ -35,6 +36,32 @@ impl Color {
 
     fn a(&self) -> u8 {
         self.0 as u8
+    }
+
+    // Draw s on top of self with a given opacity. Adapted from Aseprite.
+    fn blend(&self, s: Color, opacity: u8) -> Color {
+        let br: i32 = self.r().into();
+        let bg: i32 = self.g().into();
+        let bb: i32 = self.b().into();
+        let ba: i32 = self.a().into();
+        let sr: i32 = s.r().into();
+        let sg: i32 = s.g().into();
+        let sb: i32 = s.b().into();
+        let sa: i32 = s.a().into();
+        let opacity: i32 = opacity.into();
+        let sa: i32 = mul_un8(sa, opacity);
+
+        let ra = sa + ba - mul_un8(ba, sa);
+
+        if ra == 0 {
+            Color::from_rgba(0, 0, 0, 0)
+        } else {
+            let rr: i32 = br + (sr - br) * sa / ra;
+            let rg: i32 = bg + (sg - bg) * sa / ra;
+            let rb: i32 = bb + (sb - bb) * sa / ra;
+
+            Color::from_rgba(rr as u8, rg as u8, rb as u8, ra as u8)
+        }
     }
 }
 
@@ -99,37 +126,22 @@ impl Image {
         }
         let x: usize = x.try_into().expect("fits in a usize");
         let y: usize = y.try_into().expect("fits in a usize");
-        let w: usize = self.width.try_into().expect("u16 fits in a usize");
+        let w: usize = self.width.try_into().expect("fits in a usize");
         let idx: usize = (x + y * w) * 4;
 
-        let br = self.data[idx] as i32;
-        let bg = self.data[idx + 1] as i32;
-        let bb = self.data[idx + 2] as i32;
-        let ba = self.data[idx + 3] as i32;
-        let sr = source.r() as i32;
-        let sg = source.g() as i32;
-        let sb = source.b() as i32;
-        let opacity = opacity as i32;
-        let sa = source.a() as i32;
-        let sa = mul_un8(sa, opacity);
+        let b = Color::from_rgba(
+            self.data[idx],
+            self.data[idx + 1],
+            self.data[idx + 2],
+            self.data[idx + 3],
+        );
 
-        let ra = sa + ba - mul_un8(ba, sa);
+        let result = b.blend(source, opacity);
 
-        if ra == 0 {
-            self.data[idx] = 0;
-            self.data[idx + 1] = 0;
-            self.data[idx + 2] = 0;
-            self.data[idx + 3] = 0;
-        } else {
-            let rr = br + (sr - br) * sa / ra;
-            let rg = bg + (sg - bg) * sa / ra;
-            let rb = bb + (sb - bb) * sa / ra;
-
-            self.data[idx] = rr as u8;
-            self.data[idx + 1] = rg as u8;
-            self.data[idx + 2] = rb as u8;
-            self.data[idx + 3] = ra as u8;
-        }
+        self.data[idx] = result.r();
+        self.data[idx + 1] = result.g();
+        self.data[idx + 2] = result.b();
+        self.data[idx + 3] = result.a();
     }
 }
 
@@ -142,8 +154,8 @@ pub struct Frame {
 
 #[derive(Debug)]
 pub struct AsepriteFile {
-    header: AsepriteFileHeader,
-    layers: Vec<Layer>,
+    header: FileHeader,
+    layers: Vec<LayerHeader>,
     frames: Vec<Frame>,
     tags: Vec<Tag>,
     slices: Vec<Slice>,
@@ -153,7 +165,7 @@ impl AsepriteFile {
     pub fn load<R: Read + Seek>(r: R) -> Result<Self, AsepriteError> {
         let mut parser = Parser::new(r);
 
-        let header = AsepriteFileHeader::parse(&mut parser)?;
+        let header = FileHeader::parse(&mut parser)?;
         assert_eq!(header.magic, constants::ASE_FILE_MAGIC);
 
         parser.seek(128)?;

@@ -5,7 +5,7 @@ ok
 
 header
 ----
-AsepriteFileHeader {
+FileHeader {
     size: 4550,
     magic: 42464,
     frames: 12,

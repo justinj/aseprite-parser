@@ -6,8 +6,9 @@ use crate::{
     AsepriteError,
 };
 
+/// The header for the entire Aseprite file.
 #[derive(Debug)]
-pub struct AsepriteFileHeader {
+pub struct FileHeader {
     pub size: u32,
     pub magic: u16,
     pub frames: u16,
@@ -29,12 +30,12 @@ pub struct AsepriteFileHeader {
     pub grid_height: u16,
 }
 
-impl Parse for AsepriteFileHeader {
+impl Parse for FileHeader {
     fn parse<R>(p: &mut Parser<R>) -> Result<Self, AsepriteError>
     where
         R: Read + Seek,
     {
-        Ok(AsepriteFileHeader {
+        Ok(FileHeader {
             size: p.next()?,
             magic: p.next()?,
             frames: p.next()?,
@@ -59,7 +60,7 @@ impl Parse for AsepriteFileHeader {
 }
 
 #[derive(Debug)]
-pub struct Layer {
+pub struct LayerHeader {
     pub flags: u16,
     pub layer_type: u16,
     pub child_level: u16,
@@ -71,15 +72,15 @@ pub struct Layer {
     pub name: String,
 }
 
-impl Layer {
+impl LayerHeader {
     pub(crate) fn visible(&self) -> bool {
         self.flags & constants::LAYER_VISIBLE != 0
     }
 }
 
-impl Parse for Layer {
+impl Parse for LayerHeader {
     fn parse<R: Read + Seek>(p: &mut Parser<R>) -> Result<Self, AsepriteError> {
-        Ok(Layer {
+        Ok(LayerHeader {
             flags: p.next()?,
             layer_type: p.next()?,
             child_level: p.next()?,
@@ -122,6 +123,7 @@ impl Parse for Tag {
     }
 }
 
+/// A keyframe for a [Slice].
 #[derive(Debug)]
 pub struct SliceKey {
     pub frame: u32,
