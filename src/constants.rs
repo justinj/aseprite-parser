@@ -1,5 +1,13 @@
 #![allow(unused)]
 
+pub const LAYER_VISIBLE: u16 = 1 << 0;
+pub const LAYER_EDITABLE: u16 = 1 << 1;
+pub const LAYER_LOCKMOVE: u16 = 1 << 2;
+pub const LAYER_BACKGROUND: u16 = 1 << 3;
+pub const LAYER_CONTINUOUS: u16 = 1 << 4;
+pub const LAYER_COLLAPSED: u16 = 1 << 5;
+pub const LAYER_REFERENCE: u16 = 1 << 6;
+
 pub const ASE_FILE_MAGIC: u16 = 0xA5E0;
 pub const ASE_FILE_FRAME_MAGIC: u16 = 0xF1FA;
 

@@ -1,7 +1,6 @@
 use std::{
     error::Error,
     fmt::Display,
-    fs::File,
     io::{BufReader, Read, Seek, SeekFrom},
     mem::size_of,
 };
@@ -90,7 +89,7 @@ where
 
     fn advance_to(&mut self, n: usize) -> Result<(), AsepriteError> {
         if n < self.pos {
-            return Err(AsepriteError::CorruptFileError(
+            return Err(AsepriteError::CorruptFile(
                 "cannot advance past current position".into(),
             ));
         }
@@ -159,14 +158,42 @@ impl Parse for AsepriteFileHeader {
 #[derive(Debug)]
 struct Image {
     width: u16,
+    height: u16,
     data: Vec<u8>,
 }
 
 impl Image {
     fn new(width: u16, height: u16) -> Self {
-        let size = width * height * 4;
-        let data = vec![0; (width * height * 4).try_into().unwrap()];
-        Image { width, data }
+        Self::new_from_data(width, height, vec![0; width as usize * height as usize * 4])
+    }
+
+    fn new_from_data(width: u16, height: u16, data: Vec<u8>) -> Self {
+        assert_eq!(width as usize * height as usize * 4, data.len());
+        Image {
+            width,
+            height,
+            data,
+        }
+    }
+
+    fn draw(&mut self, x: i16, y: i16, other: &Image, opacity: u8) {
+        let mut idx = 0;
+        let w: i16 = other.width.try_into().unwrap();
+        let h: i16 = other.height.try_into().unwrap();
+        for y in y..y + h {
+            for x in x..x + w {
+                self.draw_pixel(
+                    x,
+                    y,
+                    other.data[idx],
+                    other.data[idx + 1],
+                    other.data[idx + 2],
+                    other.data[idx + 3],
+                    opacity,
+                );
+                idx += 4;
+            }
+        }
     }
 
     fn draw_pixel(&mut self, x: i16, y: i16, sr: u8, sg: u8, sb: u8, sa: u8, opacity: u8) {
@@ -183,37 +210,42 @@ impl Image {
         let w: usize = self.width.try_into().expect("u16 fits in a usize");
         let idx: usize = (x + y * w) * 4;
 
-        let br = self.data[idx] as u16;
-        let bg = self.data[idx + 1] as u16;
-        let bb = self.data[idx + 2] as u16;
-        let ba = self.data[idx + 3] as u16;
-        let sr = sr as u16;
-        let sg = sg as u16;
-        let sb = sb as u16;
-        let sa = sa as u16;
-        let opacity = opacity as u16;
+        let br = self.data[idx] as i32;
+        let bg = self.data[idx + 1] as i32;
+        let bb = self.data[idx + 2] as i32;
+        let ba = self.data[idx + 3] as i32;
+        let sr = sr as i32;
+        let sg = sg as i32;
+        let sb = sb as i32;
+        let opacity = opacity as i32;
+        let sa = sa as i32;
+        let sa = mul_un8(sa, opacity);
 
-        let ra = (sa + ba).saturating_sub(mul_un8(ba, opacity));
+        let ra = sa + ba - mul_un8(ba, sa);
 
-        let rr = br + mul_un8(sr.saturating_sub(br), opacity);
-        let rg = bg + mul_un8(sg.saturating_sub(bg), opacity);
-        let rb = bb + mul_un8(sb.saturating_sub(bb), opacity);
+        if ra == 0 {
+            self.data[idx] = 0;
+            self.data[idx + 1] = 0;
+            self.data[idx + 2] = 0;
+            self.data[idx + 3] = 0;
+        } else {
+            let rr = br + (sr - br) * sa / ra;
+            let rg = bg + (sg - bg) * sa / ra;
+            let rb = bb + (sb - bb) * sa / ra;
 
-        // println!("sr={}, sg={}, sb={}, sa={}", sr, sg, sb, sa);
-        // println!("sr - br = {}", mul_un8(sr.saturating_sub(br), 33));
-        // println!("rr={}, rg={}, rb={}, ra={}", rr, rg, rb, ra);
-
-        self.data[idx] = rr as u8;
-        self.data[idx + 1] = rg as u8;
-        self.data[idx + 2] = rb as u8;
-        self.data[idx + 3] = ra as u8;
+            self.data[idx] = rr as u8;
+            self.data[idx + 1] = rg as u8;
+            self.data[idx + 2] = rb as u8;
+            self.data[idx + 3] = ra as u8;
+        }
     }
 }
 
 #[derive(Debug)]
 struct Frame {
     duration: u16,
-    layers: Vec<Layer>,
+    layers: Vec<Image>,
+    image: Image,
 }
 
 #[derive(Debug)]
@@ -226,33 +258,16 @@ struct Layer {
     blend_mode: u16,
     opacity: u8,
     name: String,
-    image: Image,
 }
 
-fn mul_un8(a: u16, b: u16) -> u16 {
+fn mul_un8(a: i32, b: i32) -> i32 {
     let t = a * b + 0x80;
     ((t >> 8) + t) >> 8
 }
 
 impl Layer {
-    fn draw(&mut self, x: i16, y: i16, w: u16, h: u16, data: Vec<u8>) {
-        let mut idx = 0;
-        let h: i16 = h.try_into().unwrap();
-        let w: i16 = w.try_into().unwrap();
-        for y in y..y + h {
-            for x in x..x + w {
-                self.image.draw_pixel(
-                    x,
-                    y,
-                    data[idx],
-                    data[idx + 1],
-                    data[idx + 2],
-                    data[idx + 3],
-                    self.opacity,
-                );
-                idx += 4;
-            }
-        }
+    fn visible(&self) -> bool {
+        self.flags & constants::LAYER_VISIBLE != 0
     }
 }
 
@@ -264,6 +279,8 @@ struct AsepriteFile<R: Read + Seek> {
     header: AsepriteFileHeader,
     parser: Parser<R>,
     cur_frame: usize,
+    layers: Vec<Layer>,
+    frames: Vec<Frame>,
 }
 
 impl<R: Read + Seek> AsepriteFile<R> {
@@ -275,11 +292,19 @@ impl<R: Read + Seek> AsepriteFile<R> {
 
         parser.seek(128)?;
 
-        Ok(AsepriteFile {
+        let mut file = AsepriteFile {
             header,
             parser,
             cur_frame: 0,
-        })
+            layers: Vec::new(),
+            frames: Vec::new(),
+        };
+
+        while let Some(frame) = file.next_frame()? {
+            file.frames.push(frame);
+        }
+
+        Ok(file)
     }
 
     fn next_frame(&mut self) -> Result<Option<Frame>, AsepriteError> {
@@ -297,10 +322,22 @@ impl<R: Read + Seek> AsepriteFile<R> {
         let mut frame = Frame {
             duration,
             layers: Vec::new(),
+            image: Image::new(self.header.width, self.header.height),
         };
 
         for _ in 0..chunks {
+            while self.layers.len() > frame.layers.len() {
+                frame
+                    .layers
+                    .push(Image::new(self.header.width, self.header.height));
+            }
             self.apply_chunk(&mut frame)?;
+        }
+
+        for (i, l) in self.layers.iter().enumerate() {
+            if l.visible() {
+                frame.image.draw(0, 0, &frame.layers[i], l.opacity);
+            }
         }
 
         Ok(Some(frame))
@@ -338,11 +375,17 @@ impl<R: Read + Seek> AsepriteFile<R> {
                         let data = self.parser.next_n(chunk_end - self.parser.position())?;
                         // For some reason inflate uses a String instead of an Error.
                         let data = inflate::inflate_bytes_zlib(data)
-                            .map_err(AsepriteError::CorruptFileError)?;
-                        frame.layers[layer_index as usize].draw(x, y, w, h, data);
+                            .map_err(AsepriteError::CorruptFile)?;
+                        let cel = Image::new_from_data(w, h, data);
+                        frame.layers[layer_index as usize].draw(x, y, &cel, opacity);
+                    }
+                    constants::ASE_FILE_LINK_CEL => {
+                        let linked_frame: u16 = self.parser.next()?;
+                        let cel = &self.frames[linked_frame as usize].layers[layer_index as usize];
+                        frame.layers[layer_index as usize].draw(x, y, cel, opacity);
                     }
                     ct => {
-                        return Err(AsepriteError::UnimplementedError(format!(
+                        return Err(AsepriteError::Unimplemented(format!(
                             "unhandled cel type 0x{:x}",
                             ct
                         )));
@@ -360,7 +403,7 @@ impl<R: Read + Seek> AsepriteFile<R> {
                 self.parser.skip(3)?;
                 let name = self.parser.next()?;
 
-                frame.layers.push(Layer {
+                self.layers.push(Layer {
                     flags,
                     layer_type,
                     child_level,
@@ -369,11 +412,10 @@ impl<R: Read + Seek> AsepriteFile<R> {
                     blend_mode,
                     opacity,
                     name,
-                    image: Image::new(self.header.width, self.header.height),
                 })
             }
             ct => {
-                return Err(AsepriteError::UnimplementedError(format!(
+                return Err(AsepriteError::Unimplemented(format!(
                     "unhandled chunk type 0x{:x}",
                     ct
                 )));
@@ -388,8 +430,8 @@ impl<R: Read + Seek> AsepriteFile<R> {
 
 #[derive(Debug)]
 enum AsepriteError {
-    UnimplementedError(String),
-    CorruptFileError(String),
+    Unimplemented(String),
+    CorruptFile(String),
     Error(Box<dyn Error>),
 }
 
@@ -412,34 +454,45 @@ where
 
 #[test]
 fn test_files() -> Result<(), AsepriteError> {
+    use std::fs::File;
     use std::path::PathBuf;
 
-    let fname = "four.ase";
+    for fname in [
+        "four.ase",
+        "layers1.ase",
+        "layers2.ase",
+        "layers3.ase",
+        "layers4.ase",
+        "layers5.ase",
+        "invisible_layer.ase",
+        "waves.ase",
+        "offset.ase",
+        "linked.ase",
+        "linked2.ase",
+        "frames.ase",
+    ] {
+        let mut path = PathBuf::new();
+        path.push("testdata");
 
-    let mut path = PathBuf::new();
-    path.push("testdata");
+        let mut input_file = path.clone();
+        input_file.push(fname);
 
-    let mut input_file = path.clone();
-    input_file.push(fname);
+        let f = File::open(input_file)?;
 
-    let f = File::open(input_file)?;
+        let ase = AsepriteFile::parse(f)?;
 
-    let mut ase = AsepriteFile::parse(f)?;
+        for (idx, frame) in ase.frames.iter().enumerate() {
+            // Load the expected.
+            let mut expected = path.clone();
+            expected.push(format!("{}.{}.png", fname, idx));
+            let decoder = png::Decoder::new(File::open(expected)?);
+            let mut reader = decoder.read_info().unwrap();
+            let mut buf = vec![0; reader.output_buffer_size()];
+            let info = reader.next_frame(&mut buf).unwrap();
+            let bytes = &buf[..info.buffer_size()];
 
-    let mut idx = 0;
-    while let Some(frame) = ase.next_frame()? {
-        // Load the expected.
-        let mut expected = path.clone();
-        expected.push(format!("{}.{}.png", fname, idx));
-        let decoder = png::Decoder::new(File::open(expected)?);
-        let mut reader = decoder.read_info().unwrap();
-        let mut buf = vec![0; reader.output_buffer_size()];
-        let info = reader.next_frame(&mut buf).unwrap();
-        let bytes = &buf[..info.buffer_size()];
-
-        assert_eq!(bytes, frame.layers[0].image.data);
-
-        idx += 1;
+            assert_eq!(bytes, frame.image.data);
+        }
     }
 
     Ok(())
