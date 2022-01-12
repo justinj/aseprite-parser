@@ -1,0 +1,90 @@
+load
+testdata/slices.ase
+----
+ok
+
+slices
+----
+[
+    Slice {
+        name: "top left",
+        keys: [
+            SliceKey {
+                frame: 0,
+                bounds: Rect {
+                    x: 0,
+                    y: 0,
+                    w: 5,
+                    h: 5,
+                },
+                center: None,
+                pivot: None,
+            },
+        ],
+        user_data: UserData {
+            string: "justin's user data",
+            r: 254,
+            g: 91,
+            b: 89,
+            a: 255,
+        },
+    },
+    Slice {
+        name: "top right",
+        keys: [
+            SliceKey {
+                frame: 0,
+                bounds: Rect {
+                    x: 11,
+                    y: 0,
+                    w: 5,
+                    h: 5,
+                },
+                center: None,
+                pivot: Some(
+                    Point {
+                        x: 2,
+                        y: 2,
+                    },
+                ),
+            },
+        ],
+        user_data: UserData {
+            string: "this one has a centered pivot",
+            r: 0,
+            g: 0,
+            b: 255,
+            a: 255,
+        },
+    },
+    Slice {
+        name: "bottom left",
+        keys: [
+            SliceKey {
+                frame: 0,
+                bounds: Rect {
+                    x: 0,
+                    y: 8,
+                    w: 8,
+                    h: 8,
+                },
+                center: Some(
+                    Rect {
+                        x: 1,
+                        y: 2,
+                        w: 3,
+                        h: 4,
+                    },
+                ),
+                pivot: None,
+            },
+        ],
+        user_data: UserData {
+            string: "this has 9-slice of 1,2,3,4",
+            r: 0,
+            g: 0,
+            b: 255,
+            a: 255,
+        },
+    },
+]

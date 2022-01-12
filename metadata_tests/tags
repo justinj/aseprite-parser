@@ -1,0 +1,55 @@
+load
+testdata/frog.ase
+----
+ok
+
+header
+----
+AsepriteFileHeader {
+    size: 4550,
+    magic: 42464,
+    frames: 12,
+    width: 24,
+    height: 24,
+    depth: 32,
+    flags: 1,
+    speed: 100,
+    next: 0,
+    frit: 0,
+    transparent_index: 0,
+    _skip: Skip,
+    ncolors: 1,
+    pixel_width: 0,
+    pixel_height: 0,
+    grid_x: 2048,
+    grid_y: 2048,
+    grid_width: 0,
+    grid_height: 0,
+}
+
+tags
+----
+[
+    Tag {
+        from: 0,
+        to: 3,
+        anidir: 0,
+        _skip0: Skip,
+        r: 0,
+        g: 0,
+        b: 0,
+        _skip1: Skip,
+        name: "idle",
+    },
+    Tag {
+        from: 4,
+        to: 11,
+        anidir: 0,
+        _skip0: Skip,
+        r: 0,
+        g: 0,
+        b: 0,
+        _skip1: Skip,
+        name: "jump",
+    },
+]

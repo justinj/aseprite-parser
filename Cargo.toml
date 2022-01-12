@@ -10,3 +10,4 @@ inflate = "0.4.5"
 
 [dev-dependencies]
 png = "0.17.2"
+datadriven = "0.6.0"

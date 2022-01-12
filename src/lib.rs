@@ -1,165 +1,55 @@
 use std::{
     error::Error,
     fmt::Display,
-    io::{BufReader, Read, Seek, SeekFrom},
-    mem::size_of,
+    io::{Read, Seek},
 };
 
+use constants::{ASE_USER_DATA_FLAG_HAS_COLOR, ASE_USER_DATA_FLAG_HAS_TEXT};
+
+use crate::parser::{Parse, Parser};
+
 mod constants;
+mod metadata;
+mod parser;
 
-trait Parse: Sized {
-    fn parse<R: Read + Seek>(p: &mut Parser<R>) -> Result<Self, AsepriteError>;
-}
+pub use metadata::{AsepriteFileHeader, Layer, Point, Rect, Slice, SliceKey, Tag};
 
-macro_rules! impl_parse {
-    ($type_name:ty) => {
-        impl Parse for $type_name {
-            fn parse<R: Read + Seek>(p: &mut Parser<R>) -> Result<Self, AsepriteError> {
-                let n = size_of::<Self>();
-                let next_n = p.next_n(n)?;
-                Ok(Self::from_le_bytes(next_n.try_into()?))
-            }
-        }
-    };
-}
+struct Color(u32);
 
-impl_parse!(u8);
-impl_parse!(u16);
-impl_parse!(u32);
-impl_parse!(u64);
-impl_parse!(i8);
-impl_parse!(i16);
-impl_parse!(i32);
-impl_parse!(i64);
+impl Color {
+    fn from_rgba(r: u8, g: u8, b: u8, a: u8) -> Self {
+        Color(((r as u32) << 24) + ((g as u32) << 16) + ((b as u32) << 8) + a as u32)
+    }
 
-impl Parse for String {
-    fn parse<R: Read + Seek>(p: &mut Parser<R>) -> Result<Self, AsepriteError> {
-        let len = u16::parse(p)?.try_into()?;
-        Ok(String::from_utf8(p.next_n(len)?.to_vec())?)
+    fn r(&self) -> u8 {
+        (self.0 >> 24) as u8
+    }
+
+    fn g(&self) -> u8 {
+        (self.0 >> 16) as u8
+    }
+
+    fn b(&self) -> u8 {
+        (self.0 >> 8) as u8
+    }
+
+    fn a(&self) -> u8 {
+        self.0 as u8
     }
 }
 
 #[derive(Debug)]
-struct Parser<R>
-where
-    R: Read,
-{
-    buf: Vec<u8>,
-    reader: BufReader<R>,
-    pos: usize,
+pub struct Image {
+    pub width: u16,
+    pub height: u16,
+    pub data: Vec<u8>,
 }
 
-impl<R> Parser<R>
-where
-    R: Read + Seek,
-{
-    fn new(r: R) -> Self {
-        Parser {
-            buf: Vec::new(),
-            reader: BufReader::new(r),
-            pos: 0,
-        }
-    }
-
-    fn seek(&mut self, n: u64) -> Result<(), AsepriteError> {
-        self.reader.seek(SeekFrom::Start(n))?;
-        Ok(())
-    }
-
-    fn next_n(&mut self, n: usize) -> Result<&[u8], AsepriteError> {
-        self.pos += n;
-        self.buf.clear();
-        self.buf.extend((0..n).map(|_| 0));
-        self.reader.read_exact(&mut self.buf)?;
-        Ok(&self.buf)
-    }
-
-    fn next<P: Parse>(&mut self) -> Result<P, AsepriteError> {
-        P::parse(self)
-    }
-
-    fn skip(&mut self, n: usize) -> Result<(), AsepriteError> {
-        self.next_n(n)?;
-        Ok(())
-    }
-
-    fn position(&self) -> usize {
-        self.pos
-    }
-
-    fn advance_to(&mut self, n: usize) -> Result<(), AsepriteError> {
-        if n < self.pos {
-            return Err(AsepriteError::CorruptFile(
-                "cannot advance past current position".into(),
-            ));
-        }
-        let extra = n - self.pos;
-        let _ = self.next_n(extra)?;
-        Ok(())
-    }
-}
-
-#[derive(Debug)]
-struct AsepriteFileHeader {
-    size: u32,
-    magic: u16,
-    frames: u16,
-    width: u16,
-    height: u16,
-    depth: u16,
-    flags: u32,
-    speed: u16,
-    next: u32,
-    frit: u32,
-    transparent_index: u32,
-    ignore0: u8,
-    ignore1: u8,
-    ignore2: u8,
-    ncolors: u16,
-    pixel_width: u8,
-    pixel_height: u8,
-    grid_x: i16,
-    grid_y: i16,
-    grid_width: u16,
-    grid_height: u16,
-}
-
-impl Parse for AsepriteFileHeader {
-    fn parse<R>(p: &mut Parser<R>) -> Result<Self, AsepriteError>
-    where
-        R: Read + Seek,
-    {
-        Ok(AsepriteFileHeader {
-            size: p.next()?,
-            magic: p.next()?,
-            frames: p.next()?,
-            width: p.next()?,
-            height: p.next()?,
-            depth: p.next()?,
-            flags: p.next()?,
-            speed: p.next()?,
-            next: p.next()?,
-            frit: p.next()?,
-            transparent_index: p.next()?,
-            ignore0: p.next()?,
-            ignore1: p.next()?,
-            ignore2: p.next()?,
-            ncolors: p.next()?,
-            pixel_width: p.next()?,
-            pixel_height: p.next()?,
-            grid_x: p.next()?,
-            grid_y: p.next()?,
-            grid_width: p.next()?,
-            grid_height: p.next()?,
-        })
-    }
-}
-
-#[derive(Debug)]
-struct Image {
-    width: u16,
-    height: u16,
-    data: Vec<u8>,
+// This is the function that Aseprite uses to multiple two bytes which represent
+// fractions of 255.
+fn mul_un8(a: i32, b: i32) -> i32 {
+    let t = a * b + 0x80;
+    ((t >> 8) + t) >> 8
 }
 
 impl Image {
@@ -185,10 +75,12 @@ impl Image {
                 self.draw_pixel(
                     x,
                     y,
-                    other.data[idx],
-                    other.data[idx + 1],
-                    other.data[idx + 2],
-                    other.data[idx + 3],
+                    Color::from_rgba(
+                        other.data[idx],
+                        other.data[idx + 1],
+                        other.data[idx + 2],
+                        other.data[idx + 3],
+                    ),
                     opacity,
                 );
                 idx += 4;
@@ -196,7 +88,7 @@ impl Image {
         }
     }
 
-    fn draw_pixel(&mut self, x: i16, y: i16, sr: u8, sg: u8, sb: u8, sa: u8, opacity: u8) {
+    fn draw_pixel(&mut self, x: i16, y: i16, source: Color, opacity: u8) {
         let x: i32 = x.into();
         let y: i32 = y.into();
         let w: i32 = self.width.into();
@@ -214,11 +106,11 @@ impl Image {
         let bg = self.data[idx + 1] as i32;
         let bb = self.data[idx + 2] as i32;
         let ba = self.data[idx + 3] as i32;
-        let sr = sr as i32;
-        let sg = sg as i32;
-        let sb = sb as i32;
+        let sr = source.r() as i32;
+        let sg = source.g() as i32;
+        let sb = source.b() as i32;
         let opacity = opacity as i32;
-        let sa = sa as i32;
+        let sa = source.a() as i32;
         let sa = mul_un8(sa, opacity);
 
         let ra = sa + ba - mul_un8(ba, sa);
@@ -242,49 +134,23 @@ impl Image {
 }
 
 #[derive(Debug)]
-struct Frame {
-    duration: u16,
+pub struct Frame {
+    pub duration: u16,
     layers: Vec<Image>,
-    image: Image,
+    pub image: Image,
 }
 
 #[derive(Debug)]
-struct Layer {
-    flags: u16,
-    layer_type: u16,
-    child_level: u16,
-    default_width: u16,
-    default_height: u16,
-    blend_mode: u16,
-    opacity: u8,
-    name: String,
-}
-
-fn mul_un8(a: i32, b: i32) -> i32 {
-    let t = a * b + 0x80;
-    ((t >> 8) + t) >> 8
-}
-
-impl Layer {
-    fn visible(&self) -> bool {
-        self.flags & constants::LAYER_VISIBLE != 0
-    }
-}
-
-#[derive(Debug)]
-struct ChunkHeader {}
-
-#[derive(Debug)]
-struct AsepriteFile<R: Read + Seek> {
+pub struct AsepriteFile {
     header: AsepriteFileHeader,
-    parser: Parser<R>,
-    cur_frame: usize,
     layers: Vec<Layer>,
     frames: Vec<Frame>,
+    tags: Vec<Tag>,
+    slices: Vec<Slice>,
 }
 
-impl<R: Read + Seek> AsepriteFile<R> {
-    fn parse(r: R) -> Result<Self, AsepriteError> {
+impl AsepriteFile {
+    pub fn load<R: Read + Seek>(r: R) -> Result<Self, AsepriteError> {
         let mut parser = Parser::new(r);
 
         let header = AsepriteFileHeader::parse(&mut parser)?;
@@ -294,29 +160,28 @@ impl<R: Read + Seek> AsepriteFile<R> {
 
         let mut file = AsepriteFile {
             header,
-            parser,
-            cur_frame: 0,
             layers: Vec::new(),
             frames: Vec::new(),
+            tags: Vec::new(),
+            slices: Vec::new(),
         };
 
-        while let Some(frame) = file.next_frame()? {
-            file.frames.push(frame);
+        for _ in 0..file.header.frames {
+            file.process_next_frame(&mut parser)?;
         }
 
         Ok(file)
     }
 
-    fn next_frame(&mut self) -> Result<Option<Frame>, AsepriteError> {
-        if self.cur_frame >= self.header.frames as usize {
-            return Ok(None);
-        }
-        self.cur_frame += 1;
-        let size: u32 = self.parser.next()?;
-        let magic: u16 = self.parser.next()?;
-        let chunks: u16 = self.parser.next()?;
-        let duration: u16 = self.parser.next()?;
-        self.parser.skip(6)?;
+    fn process_next_frame<R: Read + Seek>(
+        &mut self,
+        parser: &mut Parser<R>,
+    ) -> Result<(), AsepriteError> {
+        let _size: u32 = parser.next()?;
+        let magic: u16 = parser.next()?;
+        let chunks: u16 = parser.next()?;
+        let duration: u16 = parser.next()?;
+        parser.skip(6)?;
         assert_eq!(magic, constants::ASE_FILE_FRAME_MAGIC);
 
         let mut frame = Frame {
@@ -331,7 +196,7 @@ impl<R: Read + Seek> AsepriteFile<R> {
                     .layers
                     .push(Image::new(self.header.width, self.header.height));
             }
-            self.apply_chunk(&mut frame)?;
+            self.apply_chunk(&mut frame, parser)?;
         }
 
         for (i, l) in self.layers.iter().enumerate() {
@@ -340,13 +205,18 @@ impl<R: Read + Seek> AsepriteFile<R> {
             }
         }
 
-        Ok(Some(frame))
+        self.frames.push(frame);
+        Ok(())
     }
 
-    fn apply_chunk(&mut self, frame: &mut Frame) -> Result<(), AsepriteError> {
-        let chunk_pos = self.parser.position();
-        let chunk_size: u32 = self.parser.next()?;
-        let chunk_type: u16 = self.parser.next()?;
+    fn apply_chunk<R: Read + Seek>(
+        &mut self,
+        frame: &mut Frame,
+        parser: &mut Parser<R>,
+    ) -> Result<(), AsepriteError> {
+        let chunk_pos = parser.position();
+        let chunk_size: u32 = parser.next()?;
+        let chunk_type: u16 = parser.next()?;
         let chunk_size: usize = chunk_size.try_into()?;
         let chunk_end = chunk_pos + chunk_size;
 
@@ -360,19 +230,71 @@ impl<R: Read + Seek> AsepriteFile<R> {
             constants::ASE_FILE_CHUNK_FLI_COLOR2 => {
                 // TODO
             }
+            constants::ASE_FILE_CHUNK_SLICE => {
+                let nkeys: u32 = parser.next()?;
+                let flags: u32 = parser.next()?;
+                parser.skip(4)?;
+                let name: String = parser.next()?;
+
+                let mut slice = Slice {
+                    name,
+                    keys: Vec::new(),
+                    user_data: Default::default(),
+                };
+
+                for _ in 0..nkeys {
+                    slice.keys.push(SliceKey {
+                        frame: parser.next()?,
+                        bounds: parser.next()?,
+                        center: if flags & constants::ASE_SLICE_FLAG_HAS_CENTER_BOUNDS != 0 {
+                            Some(parser.next()?)
+                        } else {
+                            None
+                        },
+                        pivot: if flags & constants::ASE_SLICE_FLAG_HAS_PIVOT_POINT != 0 {
+                            Some(parser.next()?)
+                        } else {
+                            None
+                        },
+                    });
+                }
+
+                self.slices.push(slice);
+            }
+            constants::ASE_FILE_CHUNK_USER_DATA => {
+                // These come following the slice data.
+                let flags: u32 = parser.next()?;
+                if flags & ASE_USER_DATA_FLAG_HAS_TEXT != 0 {
+                    self.slices.last_mut().unwrap().user_data.string = parser.next()?;
+                }
+                if flags & ASE_USER_DATA_FLAG_HAS_COLOR != 0 {
+                    self.slices.last_mut().unwrap().user_data.r = parser.next()?;
+                    self.slices.last_mut().unwrap().user_data.g = parser.next()?;
+                    self.slices.last_mut().unwrap().user_data.b = parser.next()?;
+                    self.slices.last_mut().unwrap().user_data.a = parser.next()?;
+                }
+            }
+            constants::ASE_FILE_CHUNK_TAGS => {
+                let ntags: u16 = parser.next()?;
+                parser.skip(8)?;
+
+                for _ in 0..ntags {
+                    self.tags.push(parser.next()?);
+                }
+            }
             constants::ASE_FILE_CHUNK_CEL => {
-                let layer_index: u16 = self.parser.next()?;
-                let x: i16 = self.parser.next()?;
-                let y: i16 = self.parser.next()?;
-                let opacity: u8 = self.parser.next()?;
-                let cel_type: u16 = self.parser.next()?;
-                self.parser.skip(7)?;
+                let layer_index: u16 = parser.next()?;
+                let x: i16 = parser.next()?;
+                let y: i16 = parser.next()?;
+                let opacity: u8 = parser.next()?;
+                let cel_type: u16 = parser.next()?;
+                parser.skip(7)?;
 
                 match cel_type {
                     constants::ASE_FILE_COMPRESSED_CEL => {
-                        let w: u16 = self.parser.next()?;
-                        let h: u16 = self.parser.next()?;
-                        let data = self.parser.next_n(chunk_end - self.parser.position())?;
+                        let w: u16 = parser.next()?;
+                        let h: u16 = parser.next()?;
+                        let data = parser.next_n(chunk_end - parser.position())?;
                         // For some reason inflate uses a String instead of an Error.
                         let data = inflate::inflate_bytes_zlib(data)
                             .map_err(AsepriteError::CorruptFile)?;
@@ -380,56 +302,35 @@ impl<R: Read + Seek> AsepriteFile<R> {
                         frame.layers[layer_index as usize].draw(x, y, &cel, opacity);
                     }
                     constants::ASE_FILE_LINK_CEL => {
-                        let linked_frame: u16 = self.parser.next()?;
+                        let linked_frame: u16 = parser.next()?;
                         let cel = &self.frames[linked_frame as usize].layers[layer_index as usize];
                         frame.layers[layer_index as usize].draw(x, y, cel, opacity);
                     }
                     ct => {
                         return Err(AsepriteError::Unimplemented(format!(
-                            "unhandled cel type 0x{:x}",
+                            "unhandled cel type 0x{:x}. Please open an issue including the file you're attempting to open.",
                             ct
                         )));
                     }
                 }
             }
-            constants::ASE_FILE_CHUNK_LAYER => {
-                let flags = self.parser.next()?;
-                let layer_type = self.parser.next()?;
-                let child_level = self.parser.next()?;
-                let default_width = self.parser.next()?;
-                let default_height = self.parser.next()?;
-                let blend_mode = self.parser.next()?;
-                let opacity = self.parser.next()?;
-                self.parser.skip(3)?;
-                let name = self.parser.next()?;
-
-                self.layers.push(Layer {
-                    flags,
-                    layer_type,
-                    child_level,
-                    default_width,
-                    default_height,
-                    blend_mode,
-                    opacity,
-                    name,
-                })
-            }
+            constants::ASE_FILE_CHUNK_LAYER => self.layers.push(parser.next()?),
             ct => {
                 return Err(AsepriteError::Unimplemented(format!(
-                    "unhandled chunk type 0x{:x}",
+                    "unhandled chunk type 0x{:x}. Please open an issue including the file you're attempting to open.",
                     ct
                 )));
             }
         }
 
-        self.parser.advance_to(chunk_end)?;
+        parser.advance_to(chunk_end)?;
 
         Ok(())
     }
 }
 
 #[derive(Debug)]
-enum AsepriteError {
+pub enum AsepriteError {
     Unimplemented(String),
     CorruptFile(String),
     Error(Box<dyn Error>),
@@ -437,8 +338,11 @@ enum AsepriteError {
 
 impl Display for AsepriteError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // TODO
-        f.write_str("error")?;
+        match self {
+            AsepriteError::Unimplemented(s) => write!(f, "unimplemented: {}", s),
+            AsepriteError::CorruptFile(s) => write!(f, "file appears to be corrupt: {}", s),
+            AsepriteError::Error(e) => e.fmt(f),
+        }?;
         Ok(())
     }
 }
@@ -450,6 +354,37 @@ where
     fn from(e: E) -> Self {
         AsepriteError::Error(Box::new(e))
     }
+}
+
+#[test]
+fn test_metadata() {
+    use std::fs::File;
+
+    datadriven::walk("metadata_tests", |f| {
+        let mut current_file = None;
+        f.run(move |test_case| -> String {
+            match test_case.directive.as_str() {
+                "load" => {
+                    let f = File::open(&test_case.input.trim()).unwrap();
+                    current_file = Some(AsepriteFile::load(f).unwrap());
+                    "ok\n".into()
+                }
+                "header" => {
+                    format!("{:#?}\n", current_file.as_ref().unwrap().header)
+                }
+                "frames" => {
+                    format!("{:#?}\n", current_file.as_ref().unwrap().frames)
+                }
+                "tags" => {
+                    format!("{:#?}\n", current_file.as_ref().unwrap().tags)
+                }
+                "slices" => {
+                    format!("{:#?}\n", current_file.as_ref().unwrap().slices)
+                }
+                _ => panic!("unhandled {}", test_case.directive),
+            }
+        })
+    });
 }
 
 #[test]
@@ -478,8 +413,7 @@ fn test_files() -> Result<(), AsepriteError> {
         input_file.push(fname);
 
         let f = File::open(input_file)?;
-
-        let ase = AsepriteFile::parse(f)?;
+        let ase = AsepriteFile::load(f)?;
 
         for (idx, frame) in ase.frames.iter().enumerate() {
             // Load the expected.

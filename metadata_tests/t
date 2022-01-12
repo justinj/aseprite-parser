@@ -1,0 +1,112 @@
+load
+testdata/four.ase
+----
+ok
+
+header
+----
+AsepriteFileHeader {
+    size: 567,
+    magic: 42464,
+    frames: 1,
+    width: 2,
+    height: 2,
+    depth: 32,
+    flags: 1,
+    speed: 100,
+    next: 0,
+    frit: 0,
+    transparent_index: 0,
+    _skip: Skip,
+    ncolors: 1,
+    pixel_width: 0,
+    pixel_height: 0,
+    grid_x: 4096,
+    grid_y: 4096,
+    grid_width: 0,
+    grid_height: 0,
+}
+
+load
+testdata/frames.ase
+----
+ok
+
+header
+----
+AsepriteFileHeader {
+    size: 613,
+    magic: 42464,
+    frames: 2,
+    width: 1,
+    height: 1,
+    depth: 32,
+    flags: 1,
+    speed: 100,
+    next: 0,
+    frit: 0,
+    transparent_index: 0,
+    _skip: Skip,
+    ncolors: 1,
+    pixel_width: 0,
+    pixel_height: 0,
+    grid_x: 4096,
+    grid_y: 4096,
+    grid_width: 0,
+    grid_height: 0,
+}
+
+frames
+----
+[
+    Frame {
+        duration: 100,
+        layers: [
+            Image {
+                width: 1,
+                height: 1,
+                data: [
+                    255,
+                    0,
+                    0,
+                    255,
+                ],
+            },
+        ],
+        image: Image {
+            width: 1,
+            height: 1,
+            data: [
+                255,
+                0,
+                0,
+                255,
+            ],
+        },
+    },
+    Frame {
+        duration: 100,
+        layers: [
+            Image {
+                width: 1,
+                height: 1,
+                data: [
+                    0,
+                    0,
+                    255,
+                    255,
+                ],
+            },
+        ],
+        image: Image {
+            width: 1,
+            height: 1,
+            data: [
+                0,
+                0,
+                255,
+                255,
+            ],
+        },
+    },
+]
